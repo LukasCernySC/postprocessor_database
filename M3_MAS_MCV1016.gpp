@@ -1,0 +1,723 @@
+;#region Internal
+
+@init_post
+	global logical l_FirstJob l_FirstSpin l_FirstMove l_ChangeTool
+	global logical l_ChangePlane l_RelativeMode
+	global string spin_f toolcode_f s_program_name s_comp
+	global string s_current_comp
+	
+	mcode_f         = '<M>2.0(p)< >'
+	xpos_f          = '<X>+5.3< >'
+	ypos_f          = '<Y>+5.3< >'
+	zpos_f          = '<Z>+5.3< >'
+	spin_f          = '<S>5.3(p)< >'
+	feed_f          = '<F>5.3(p)< >'
+	toolcode_f      = '5.0(p)< >'
+	  
+	blknum_f        = '5.0(p)'
+	blknum_gen      = true
+	blknum_exist    = true
+	blknum_letter   = ''
+	end_block_text  = ''
+	blknum          = 1
+	blknum_delta    = 1
+	blknum_max      = 999999
+	  
+	l_FirstJob = true
+	  
+	; global integer trace_num
+	; Input "Trace --> 0 - 5" trace_num
+	; trace "all":trace_num
+endp
+
+@def_tool
+	call @usr_ToolTable((0)) ;Set tool into table
+endp
+
+@start_of_file
+	s_program_name = left(g_file_name, strlen(g_file_name) - instr(rev(g_file_name), "."))
+	{"0 BEGIN PGM ", s_program_name, " MM"}
+endp
+
+@start_program
+	call @usr_ToolTable((1)) ;Write tool table
+	{nb,";"}
+	{nb, "BLK FORM 0.1 Z ", stock_x_minus:xpos_f, stock_y_minus:ypos_f, stock_z_minus:zpos_f}
+	{nb, "BLK FORM 0.2 ", stock_x_plus:xpos_f, stock_y_plus:ypos_f, stock_z_plus:zpos_f}
+endp
+
+@start_of_job
+	call @usr_Cooling((2)) ;Coolant off
+	call @usr_SpecCharChange(job_name)
+	{nb, ";",dup("=",(strlen(job_name)+6))}
+	{nb, "* - "job_name}
+	{nb, ";",dup("=",(strlen(job_name)+6))}
+	s_comp = "R0 "
+	l_FirstSpin = true
+	l_FirstMove = true
+endp
+
+@end_of_file
+	{nb, "END PGM ", s_program_name, " MM"}
+	{nb, ";"}
+endp
+
+@end_of_job
+	l_ChangeTool = false
+	l_FirstJob = false
+	l_ChangePlane = false
+endp
+
+@end_program
+	call @usr_Cooling((3)) ;Coolant off
+	{nb, "L ", (5):mcode_f}
+	call @usr_SafePosition((0)) ;Tool retract in Z axis
+	{nb, "L ", (30):mcode_f}
+	{nb, ";"}
+	{nb, ";=== END OF PROGRAM ==="}
+endp
+
+@change_tool
+	l_ChangeTool = true
+endp
+
+@relative_mode
+	xpos_f = '<IX>+5.3< >'
+	ypos_f = '<IY>+5.3< >'
+	zpos_f = '<IZ>+5.3< >'
+	l_RelativeMode = true
+endp
+
+@absolute_mode
+	xpos_f = '<X>+5.3< >'
+	ypos_f = '<Y>+5.3< >'
+	zpos_f = '<Z>+5.3< >'
+	l_RelativeMode = false
+endp
+
+@arc
+	if l_FirstMove
+		call @rapid_move
+	endif
+	  
+	{nb,"CC ", xlcenter:xpos_f, ylcenter:ypos_f}
+	if !change(zlpos)
+		{nb,"C ", xlpos:xpos_f, ylpos:ypos_f}
+	else
+		if arc_direction eq CW
+			arc_size = arc_size * (-1)
+		endif
+		if l_RelativeMode
+			{nb, "CP ", arc_size:'<IPA>+5.3()< >', zlpos:zpos_f}
+		else
+			{nb, "CP ", arc_size:'<IPA>+5.3()< >', (zlpos-zlstart):'<IZ>+5.3()< >'}
+		endif
+	endif
+	
+	if arc_direction eq CW
+		{"DR- "}
+	else
+		{"DR+ "}
+	endif
+	{[feed:feed_f]}
+endp
+
+@line
+	if l_FirstMove
+		call @rapid_move
+	endif
+		
+	gcode=1
+	{nb, "L ", [xlpos:xpos_f], [ylpos:ypos_f], [zlpos:zpos_f]}
+	if s_comp ne s_current_comp
+		{s_comp}
+		s_current_comp = s_comp
+	endif
+	{[feed:feed_f]}
+endp
+
+@compensation
+	if side eq comp_left
+		s_comp = "RL "
+	elseif side eq comp_right
+		s_comp = "RR "
+	elseif side eq comp_off
+		s_comp = "R0 "
+	endif
+endp
+
+@rapid_move
+	gcode = 0
+	if l_FirstMove
+		if l_ChangeTool
+			call @usr_SafePosition((0)) ;Tool retract in Z axis
+		endif
+		call @usr_StartTool ;Tool call and spin definition
+		{nb, "L ", xlpos:xpos_f, ylpos:ypos_f, "R0 FMAX ", (3+tool_direction):mcode_f}  
+		call @usr_Cooling((1)) ;Set coolant on
+		{nb, "L ", zlpos:zpos_f, "FMAX"}
+		
+		l_FirstMove = false
+	else
+		{nb, "L ", [xlpos:xpos_f], [ylpos:ypos_f], [zlpos:zpos_f], "FMAX"}
+	endif
+endp
+
+@m_feed_spin
+	if !l_FirstSpin and (change(spin) or change(spin_direction))
+		if spin ne 0 and spin_direction ne 2
+			{nb, "TOOL CALL ", spin}
+		endif
+		if change(spin_direction)
+			{nb, "L ", (3+spin_direction):mcode_f}
+		endif
+	endif
+	l_FirstSpin = false
+endp
+
+@drill
+	local string Q200_f Q201_f Q202_f Q203_f
+	local string Q204_f Q205_f Q206_f Q207_f
+	local string Q208_f Q210_f Q211_f Q212_f
+	local string Q213_f Q214_f Q239_f Q253_f
+	local string Q254_f Q256_f Q257_f Q258_f
+	local string Q259_f Q334_f Q335_f Q336_f
+	local string Q342_f Q355_f Q356_f Q357_f
+	local string Q358_f Q359_f Q360_f Q379_f
+	local string Q351_f S_SPACE
+	local numeric n_depth Q203 Q204 Q200
+	local numeric Q201 Q202_t Q206 Q208
+	local numeric Q239 Q253 Q256 Q258
+	local numeric Q259 Q334 Q351
+	
+	call @rapid_move
+	 
+	Q200_f = '<Q200=>5.3(p)< ;SETUP CLEARANCE >'
+	Q201_f = '<Q201=->5.3(p)< ;DEPTH >'
+	Q202_f = '<Q202=>5.3(p)< ;PLUNGING DEPTH >'
+	Q203_f = '<Q203=>5.3(p)< ;SURFACE COORDINATE >'
+	Q204_f = '<Q204=>5.3(p)< ;2ND SETUP CLEARANCE >'
+	Q205_f = '<Q205=>5.3(p)< ;MIN. PLUNGING DEPTH >'
+	Q206_f = '<Q206=>5.3(p)< ;FEED RATE FOR PLNGNG >'
+	Q207_f = '<Q207=>5.3(p)< ;FEED RATE FOR MILLING >'
+	Q208_f = '<Q208=>5.3(p)< ;RETRACTION FEED RATE >'
+	Q210_f = '<Q210=>5.2/0(p)< ;DWELL TIME AT TOP >'
+	Q211_f = '<Q211=>5.2/0(p)< ;DWELL TIME AT DEPTH >'
+	Q212_f = '<Q212=>5.3(p)< ;DECREMENT >'
+	Q213_f = '<Q213=>5.3(p)< ;BREAKS >'
+	Q214_f = '<Q214=>5.3(p)< ;DISENGAGING DIRECTN >'
+	Q239_f = '<Q239=>5.3(p)< ;PITCH >'
+	Q253_f = '<Q253=>5.3(p)< ;F PRE-POSITIONING >'
+	Q254_f = '<Q254=>5.3(p)< ;F COUNTERSINKING >'
+	Q256_f = '<Q256=>5.3(p)< ;DIST. FOR CHIP BRKNG >'
+	Q257_f = '<Q257=>5.3(p)< ;DEPTH FOR CHIP BRKNG >'
+	Q258_f = '<Q258=>5.3(p)< ;UPPER ADV. STOP DISTANCE >'
+	Q259_f = '<Q259=>5.3(p)< ;LOWER ADV. STOP DIST. >'
+	Q334_f = '<Q334=>5.3(p)< ;PLUNGING DEPTH >'
+	Q335_f = '<Q335=>5.3(p)< ;NOMINAL DIAMETER >'
+	Q336_f = '<Q336=>5.3(p)< ;ANGLE OF SPINDLE >'
+	Q342_f = '<Q342=>5.3(p)< ;ROUGHING DIAMETER >'
+	Q355_f = '<Q355=>5.3(p)< ;THREADS PER STEP >'
+	Q356_f = '<Q356=>5.3(p)< ;COUNTERSINKING DEPTH >'
+	Q357_f = '<Q357=>5.3(p)< ;CLEARANCE TO SIDE >'
+	Q358_f = '<Q358=>5.3(p)< ;DEPTH AT FRONT >'
+	Q359_f = '<Q359=>5.3(p)< ;OFFSET AT FRONT >'
+	Q360_f = '<Q360=>5.3(p)< ;COUNTERSINK >'
+	Q379_f = '<Q379=>5.3(p)< ;STARTING POINT >'
+	Q351_f = '<Q351=>5.3(p)< ;CLIMB OR UP-CUT >'
+	 
+	S_SPACE = space(strlen(tostr(blknum))+1) ;Format space before line start
+	
+	n_depth = round((drill_upper_zl - safety - drill_lower_zl),3) 
+	Q203 = drill_upper_zl - safety
+	Q204 = abs((drill_upper_zl - safety) - drill_clearance_zl)
+	Q200 = round(safety,3)
+	Q201 = n_depth
+	if(down_step eq 0 or down_step > n_Depth)
+		Q202_t = n_depth
+	else 
+		Q202_t = down_step
+	endif
+	Q206 = feed
+	Q208 = 2000
+	Q239 = tool_drill_lead
+	Q253 = feed
+	Q256 = 0.2
+	Q258 = 0.2
+	Q259 = 0.2
+	Q334 = down_step
+	Q351 = 1
+	 
+	if drill_cycle_name eq 'cycle_200'
+		{nb, "CYCL DEF 200 DRILLING ~"} 
+		{nl, S_SPACE, Q200:Q200_f, "~"}
+		{nl, S_SPACE, Q201:Q201_f, "~"}
+		{nl, S_SPACE, Q206:Q206_f, "~"}
+		{nl, S_SPACE, Q202_t:Q202_f, "~"}
+		{nl, S_SPACE, nVMID_Q210:Q210_f, "~"}
+		{nl, S_SPACE, Q203:Q203_f, "~"}
+		{nl, S_SPACE, Q204:Q204_f, "~"}
+		{nl, S_SPACE, nVMID_Q211:Q211_f}
+	endif
+	if drill_cycle_name eq 'cycle_201'
+		{nb, "CYCL DEF 201 REAMING ~"} 
+		{nl, S_SPACE, Q200:Q200_f, "~"}
+		{nl, S_SPACE, Q201:Q201_f, "~"}
+		{nl, S_SPACE, Q206:Q206_f, "~"}
+		{nl, S_SPACE, nVMID_Q211:Q211_f, "~"}
+		{nl, S_SPACE, nVMID_Q208:Q208_f, "~"}
+		{nl, S_SPACE, Q203:Q203_f, "~"}
+		{nl, S_SPACE, Q204:Q204_f}
+	endif
+	if drill_cycle_name eq 'cycle_202'
+		{nb, "CYCL DEF 202 BORING ~"} 
+		{nl, S_SPACE, Q200:Q200_f, "~"}
+		{nl, S_SPACE, Q201:Q201_f, "~"}
+		{nl, S_SPACE, Q206:Q206_f, "~"}
+		{nl, S_SPACE, nVMID_Q211:Q211_f, "~"}
+		{nl, S_SPACE, nVMID_Q208:Q208_f, "~"}
+		{nl, S_SPACE, Q203:Q203_f, "~"}
+		{nl, S_SPACE, Q204:Q204_f, "~"}
+		{nl, S_SPACE, nVMID_Q214:Q214_f, "~"}
+		{nl, S_SPACE, nVMID_Q336:Q336_f}
+	endif
+	if drill_cycle_name eq 'cycle_203'
+		{nb, "CYCL DEF 203 UNIVERSAL DRILLING ~"} 
+		{nl, S_SPACE, Q200:Q200_f, "~"}
+		{nl, S_SPACE, Q201:Q201_f, "~"}
+		{nl, S_SPACE, Q206:Q206_f, "~"}
+		{nl, S_SPACE, Q202_t:Q202_f, "~"}
+		{nl, S_SPACE, nVMID_Q210:Q210_f, "~"}
+		{nl, S_SPACE, Q203:Q203_f, "~"}
+		{nl, S_SPACE, Q204:Q204_f, "~"}
+		{nl, S_SPACE, nVMID_Q212:Q212_f, "~"}
+		{nl, S_SPACE, nVMID_Q213:Q213_f, "~"}
+		{nl, S_SPACE, nVMID_Q205:Q205_f, "~"}
+		{nl, S_SPACE, nVMID_Q211:Q211_f, "~"}
+		{nl, S_SPACE, Q208:Q208_f, "~"}
+		{nl, S_SPACE, Q256:Q256_f}
+	endif
+	if drill_cycle_name eq 'cycle_205'
+		{nb, "CYCL DEF 205 UNIVERSAL PECKING ~"} 
+		{nl, S_SPACE, Q200:Q200_f, "~"}
+		{nl, S_SPACE, Q201:Q201_f, "~"}
+		{nl, S_SPACE, Q206:Q206_f, "~"}
+		{nl, S_SPACE, Q202_t:Q202_f, "~"}
+		{nl, S_SPACE, Q203:Q203_f, "~"}
+		{nl, S_SPACE, Q204:Q204_f, "~"}
+		{nl, S_SPACE, nVMID_Q212:Q212_f, "~"}
+		{nl, S_SPACE, nVMID_Q205:Q205_f, "~"}
+		{nl, S_SPACE, Q258:Q258_f, "~"}
+		{nl, S_SPACE, Q259:Q259_f, "~"}
+		{nl, S_SPACE, nVMID_Q257:Q257_f, "~"}
+		{nl, S_SPACE, Q256:Q256_f, "~"}
+		{nl, S_SPACE, nVMID_Q211:Q211_f, "~"}
+		{nl, S_SPACE, nVMID_Q379:Q379_f, "~"}
+		{nl, S_SPACE, Q253:Q253_f}
+	endif
+	if drill_cycle_name eq 'cycle_206'
+		Q206 = feed_teeth * spin
+		  
+		{nb, "CYCL DEF 206 TAPPING NEW ~"} 
+		{nl, S_SPACE, Q200:Q200_f, "~"}
+		{nl, S_SPACE, Q201:Q201_f, "~"}
+		{nl, S_SPACE, Q206:Q206_f, "~"}
+		{nl, S_SPACE, nVMID_Q211:Q211_f, "~"}
+		{nl, S_SPACE, Q203:Q203_f, "~"}
+		{nl, S_SPACE, Q204:Q204_f}
+	endif
+	if drill_cycle_name eq 'cycle_207'
+		{nb, "CYCL DEF 207 RIGID TAPPING NEW ~"} 
+		{nl, S_SPACE, Q200:Q200_f, "~"}
+		{nl, S_SPACE, Q201:Q201_f, "~"}
+		{nl, S_SPACE, Q239:Q239_f, "~"}
+		{nl, S_SPACE, Q203:Q203_f, "~"}
+		{nl, S_SPACE, Q204:Q204_f}
+	endif
+	if drill_cycle_name eq 'cycle_208'
+		{nb, "CYCL DEF 208 BORE MILLING ~"} 
+		{nl, S_SPACE, Q200:Q200_f, "~"}
+		{nl, S_SPACE, Q201:Q201_f, "~"}
+		{nl, S_SPACE, Q206:Q206_f, "~"}
+		{nl, S_SPACE, nVMID_Q334:Q334_f, "~"}
+		{nl, S_SPACE, Q203:Q203_f, "~"}
+		{nl, S_SPACE, Q204:Q204_f, "~"}
+		{nl, S_SPACE, nVMID_Q335:Q335_f, "~"}
+		{nl, S_SPACE, nVMID_Q342:Q342_f, "~"}
+		{nl, S_SPACE, Q351:Q351_f}
+	endif
+	if drill_cycle_name eq 'cycle_209'
+		{nb, "CYCL DEF 209 TAPPING W/ CHIP BRKG ~"} 
+		{nl, S_SPACE, Q200:Q200_f, "~"}
+		{nl, S_SPACE, Q201:Q201_f, "~"}
+		{nl, S_SPACE, Q239:Q239_f, "~"}
+		{nl, S_SPACE, Q203:Q203_f, "~"}
+		{nl, S_SPACE, Q204:Q204_f, "~"}
+		{nl, S_SPACE, nVMID_Q257:Q257_f, "~"}
+		{nl, S_SPACE, Q256:Q256_f, "~"}
+		{nl, S_SPACE, nVMID_Q336:Q336_f}
+	endif
+	if drill_cycle_name eq 'cycle_262'
+		{nb, "CYCL DEF 262 THREAD MILLING ~"} 
+		{nl, S_SPACE, nVMID_Q335:Q335_f, "~"}
+		{nl, S_SPACE, Q239:Q239_f, "~"}
+		{nl, S_SPACE, Q201:Q201_f, "~"}
+		{nl, S_SPACE, nVMID_Q355:Q355_f, "~"}
+		{nl, S_SPACE, Q253:Q253_f, "~"}
+		{nl, S_SPACE, Q351:Q351_f, "~"}
+		{nl, S_SPACE, Q200:Q200_f, "~"}
+		{nl, S_SPACE, Q203:Q203_f, "~"}
+		{nl, S_SPACE, Q204:Q204_f, "~"}
+		if nVMID_Q207 gt 0
+			{nl, S_SPACE, nVMID_Q207:Q207_f}
+		else
+			{nl, S_SPACE, feed:Q207_f}
+		endif
+	endif
+	if drill_cycle_name eq 'cycle_263'
+		{nb, "CYCL DEF 263 THREAD MLLING/CNTSNKG ~"} 
+		{nl, S_SPACE, nVMID_Q335:Q335_f, "~"}
+		{nl, S_SPACE, Q239:Q239_f, "~"}
+		{nl, S_SPACE, Q201:Q201_f, "~"}
+		{nl, S_SPACE, nVMID_Q356:Q356_f, "~"}
+		{nl, S_SPACE, Q253:Q253_f, "~"}
+		{nl, S_SPACE, Q351:Q351_f, "~"}
+		{nl, S_SPACE, Q200:Q200_f, "~"}
+		{nl, S_SPACE, nVMID_Q357:Q357_f, "~"}
+		{nl, S_SPACE, nVMID_Q358:Q358_f, "~"}
+		{nl, S_SPACE, nVMID_Q359:Q359_f, "~"}
+		{nl, S_SPACE, Q203:Q203_f, "~"}
+		{nl, S_SPACE, Q204:Q204_f, "~"}
+		{nl, S_SPACE, nVMID_Q254:Q254_f, "~"}
+		if nVMID_Q207 gt 0
+			{nl, S_SPACE, nVMID_Q207:Q207_f}
+		else
+			{nl, S_SPACE, feed:Q207_f}
+		endif
+	endif
+	if drill_cycle_name eq 'cycle_264'
+		{nb, "CYCL DEF 264 THREAD DRILLING/MLLNG ~"} 
+		{nl, S_SPACE, nVMID_Q335:Q335_f, "~"}
+		{nl, S_SPACE, Q239:Q239_f, "~"}
+		{nl, S_SPACE, Q201:Q201_f, "~"}
+		{nl, S_SPACE, nVMID_Q356:Q356_f, "~"}
+		{nl, S_SPACE, Q253:Q253_f, "~"}
+		{nl, S_SPACE, Q351:Q351_f, "~"}
+		{nl, S_SPACE, nVMID_Q202:Q202_f, "~"}
+		{nl, S_SPACE, Q258:Q258_f, "~"}
+		{nl, S_SPACE, Q256:Q256_f, "~"}
+		{nl, S_SPACE, nVMID_Q257:Q257_f, "~"}
+		{nl, S_SPACE, nVMID_Q358:Q358_f, "~"}
+		{nl, S_SPACE, nVMID_Q359:Q359_f, "~"}
+		{nl, S_SPACE, Q200:Q200_f, "~"}
+		{nl, S_SPACE, Q203:Q203_f, "~"}
+		{nl, S_SPACE, Q204:Q204_f, "~"}
+		{nl, S_SPACE, Q206:Q206_f, "~"}
+		if nVMID_Q207 gt 0
+			{nl, S_SPACE, nVMID_Q207:Q207_f}
+		else
+			{nl, S_SPACE, feed:Q207_f}
+		endif
+	endif
+	if drill_cycle_name eq 'cycle_265'
+		{nb, "CYCL DEF 265 HEL. THREAD DRLG/MLG ~"} 
+		{nl, S_SPACE, nVMID_Q335:Q335_f, "~"}
+		{nl, S_SPACE, Q239:Q239_f, "~"}
+		{nl, S_SPACE, Q201:Q201_f, "~"}
+		{nl, S_SPACE, Q253:Q253_f, "~"}
+		{nl, S_SPACE, nVMID_Q358:Q358_f, "~"}
+		{nl, S_SPACE, nVMID_Q359:Q359_f, "~"}
+		if nVMID_Q360 eq 0
+			{nl, S_SPACE, (0):Q360_f}
+		else
+			{nl, S_SPACE, (1):Q360_f}
+		endif
+		{nl, S_SPACE, Q200:Q200_f, "~"}
+		{nl, S_SPACE, Q203:Q203_f, "~"}
+		{nl, S_SPACE, Q204:Q204_f, "~"}
+		{nl, S_SPACE, nVMID_Q254:Q254_f, "~"}
+		if nVMID_Q207 gt 0
+			{nl, S_SPACE, nVMID_Q207:Q207_f}
+		else
+			{nl, S_SPACE, feed:Q207_f}
+		endif
+	endif
+	if drill_cycle_name eq 'cycle_267'
+		{nb, "CYCL DEF 267 OUTSIDE THREAD MLLNG ~"} 
+		{nl, S_SPACE, nVMID_Q335:Q335_f, "~"}
+		{nl, S_SPACE, Q239:Q239_f, "~"}
+		{nl, S_SPACE, Q201:Q201_f, "~"}
+		{nl, S_SPACE, nVMID_Q355:Q355_f, "~"}
+		{nl, S_SPACE, Q253:Q253_f, "~"}
+		{nl, S_SPACE, Q351:Q351_f, "~"}
+		{nl, S_SPACE, Q200:Q200_f, "~"}
+		{nl, S_SPACE, nVMID_Q358:Q358_f, "~"}
+		{nl, S_SPACE, nVMID_Q359:Q359_f, "~"}
+		{nl, S_SPACE, Q203:Q203_f, "~"}
+		{nl, S_SPACE, Q204:Q204_f, "~"}
+		{nl, S_SPACE, nVMID_Q254:Q254_f, "~"}
+		if nVMID_Q207 gt 0
+			{nl, S_SPACE, nVMID_Q207:Q207_f}
+		else
+			{nl, S_SPACE, feed:Q207_f}
+		endif
+	endif
+endp
+
+@drill_point
+	{nb,"L ", xlpos:xpos_f, ylpos:ypos_f, "R0 FMAX ", (99):mcode_f}
+endp
+
+@call_proc
+	{nb, "CALL LBL ", label}
+endp
+
+@proc
+	{nb, ";"}
+	{nb, "LBL ", label}
+endp
+
+@end_proc
+	{nb, "LBL 0"}
+endp
+
+@delay
+	{nb, "CYCL DEF 9.0 DWELL TIME"}
+	{nb, "CYCL DEF 9.1 DWELL ", delay_period} 
+endp
+
+@dwell
+	{nb, "CYCL DEF 9.0 DWELL TIME"}
+	{nb, "CYCL DEF 9.1 DWELL ", delay_period} 
+endp
+
+@home_number
+	if !l_FirstJob
+		call @usr_SafePosition((1)) ;Tool retract in XYZ axis
+	endif
+endp
+
+@controlled_coolant
+	if coolant_control eq true
+		call @usr_Cooling((1)) ;Set coolant on
+	else
+		call @usr_Cooling((2)) ;Coolant off
+	endif
+endp
+
+;#region User
+@usr_SafePosition(integer type)
+	local numeric nL_HomePosX nL_HomePosY nL_HomePosZ
+	
+	gcode = 0
+	nL_HomePosX = 0
+	nL_HomePosY = 0
+	nL_HomePosZ = 0
+	
+	if type eq 0
+		{nb, "L ", nL_HomePosZ:'<Z>+5.3< >', "FMAX M91"}
+	elseif type eq 1
+		{nb, "L ", nL_HomePosZ:'<Z>+5.3< >', "FMAX M91"}
+		{nb, "L ", nL_HomePosX:'<X>+5.3< >', nL_HomePosY:'<Y>+5.3< >',  "FMAX M91"}
+	endif
+endp
+
+@usr_StartTool
+	if l_ChangeTool
+		{nb, "TOOL CALL ", tool_number:toolcode_f, "Z ", spin:spin_f}
+		{nb, "L ", (6):mcode_f}
+	elseif change(spin)
+		{nb, "TOOL CALL ", spin}
+	endif
+endp
+
+@usr_ToolTable(integer type)
+	; 0 - set tool in @def_tool
+	; 1 - write tool table
+	global string sA_ToolTable<<200>>
+	global integer i_ToolCounter
+	local string sL_ToolDescription
+	  
+	if type eq 0
+		i_ToolCounter = i_ToolCounter + 1 
+		    
+		if tool_message ne ''    
+			sL_ToolDescription = tool_message
+		else
+			sL_ToolDescription = upper(tool_user_type)
+			if tool_diameter ne 0
+				sL_ToolDescription = sL_ToolDescription + " D" + tostr(tool_diameter:'5.3(p)')
+			endif
+			if corner_radius ne 0
+				sL_ToolDescription = sL_ToolDescription + " R" + tostr(corner_radius:'5.3(p)')
+			endif
+		endif
+		call @usr_SpecCharChange(sL_ToolDescription)
+		sA_ToolTable<<i_ToolCounter>> = tostr(tool_number:'<T>5.0(p)< >') + sL_ToolDescription   
+	endif
+	  
+	if type eq 1
+		{nl, "; ===== TOOL TABLE ===== "}
+		local integer i
+		i = 1
+		while sA_ToolTable<<i>> ne ""
+			{nl, ";", sA_ToolTable<<i>>}
+			i = i + 1 
+		endw
+		{nl}
+	endif
+endp
+
+@usr_Cooling(integer type)
+	;Input parameters:
+	;1 - cooling ON
+	;2 - cooling OFF (Only if needed)
+	;3 - cooling OFF (Allways)
+	;3 - reset coolant states
+	  
+	global string s_CoolantMFunctions<<18,2>>
+	global logical l_CoolantState<<18>>
+	global integer i_CoolantValues<<18>>
+	local string sL_MCodesToWrite<<18>> 
+	local integer iL_CoolantNumber
+	  
+	;Flood Coolant
+	s_CoolantMFunctions<<8,1>> = ""
+	s_CoolantMFunctions<<8,2>> = ""
+	i_CoolantValues<<8>> = flood_coolant
+	
+	;Through Coolant
+	s_CoolantMFunctions<<14,1>> = ""
+	s_CoolantMFunctions<<14,2>> = ""
+	i_CoolantValues<<14>> = through_coolant
+	
+	;Air Blast
+	s_CoolantMFunctions<<17,1>> = ""
+	s_CoolantMFunctions<<17,2>> = ""
+	i_CoolantValues<<17>> = air_blast_coolant
+	
+	;Air Through
+	s_CoolantMFunctions<<18,1>> = ""
+	s_CoolantMFunctions<<18,2>> = ""
+	i_CoolantValues<<18>> = air_through_coolant
+	   
+	iL_CoolantNumber = 1  
+	while iL_CoolantNumber le 18
+		;Coolant ON;
+		if type eq 1 and i_CoolantValues<<iL_CoolantNumber>> eq 1 and !l_CoolantState<<iL_CoolantNumber>>
+			sL_MCodesToWrite<<iL_CoolantNumber>> = s_CoolantMFunctions<<iL_CoolantNumber,1>>
+			l_CoolantState<<iL_CoolantNumber>> = true;
+			;Coolant OFF (Only if needed);
+		elseif type eq 2 and i_CoolantValues<<iL_CoolantNumber>> eq 0 and l_CoolantState<<iL_CoolantNumber>>
+			sL_MCodesToWrite<<iL_CoolantNumber>> = s_CoolantMFunctions<<iL_CoolantNumber,2>>
+			l_CoolantState<<iL_CoolantNumber>> = false;
+			;Coolant OFF
+		elseif type eq 3 and l_CoolantState<<iL_CoolantNumber>>
+			sL_MCodesToWrite<<iL_CoolantNumber>> = s_CoolantMFunctions<<iL_CoolantNumber,2>>
+			l_CoolantState<<iL_CoolantNumber>> = false;
+			;Reset all coolant states
+		elseif type eq 4
+			l_CoolantState<<iL_CoolantNumber>> = false;
+		endif
+		    
+		iL_CoolantNumber = iL_CoolantNumber + 1
+	endw
+	  
+	;Writes each M code only once   
+	if type ne 4  
+		iL_CoolantNumber = 1
+		while iL_CoolantNumber le 18      
+			if sL_MCodesToWrite<<iL_CoolantNumber>> ne ""               
+				local integer i
+				i = 1        
+				while i le 18 ;Clean same M codes from array and reset coolant states
+					if i ne iL_CoolantNumber
+						if (type eq 2 or type eq 3) and s_CoolantMFunctions<<iL_CoolantNumber,2>> eq s_CoolantMFunctions<<i,2>>
+							l_CoolantState<<i>> = false
+						endif          
+						if sL_MCodesToWrite<<iL_CoolantNumber>> eq sL_MCodesToWrite<<i>>
+							sL_MCodesToWrite<<i>> = ""
+						endif
+					endif
+					i = i + 1
+				endw       
+				{nb, sL_MCodesToWrite<<iL_CoolantNumber>>}
+			endif      
+			iL_CoolantNumber = iL_CoolantNumber + 1 
+		endw
+	endif
+endp
+
+@usr_SpecCharChange(string s_InputString)
+	s_InputString = replace(s_InputString,"\xE1","a")
+	s_InputString = replace(s_InputString,"\xC1","A")
+	s_InputString = replace(s_InputString,"\xE8","c")
+	s_InputString = replace(s_InputString,"\xC8","C")
+	s_InputString = replace(s_InputString,"\xEF","d")
+	s_InputString = replace(s_InputString,"\xCF","D")
+	s_InputString = replace(s_InputString,"\xE9","e")
+	s_InputString = replace(s_InputString,"\xC9","E")
+	s_InputString = replace(s_InputString,"\xEC","e")
+	s_InputString = replace(s_InputString,"\xCC","E")
+	s_InputString = replace(s_InputString,"\xED","i")
+	s_InputString = replace(s_InputString,"\xCD","I")
+	s_InputString = replace(s_InputString,"\xF2","n")
+	s_InputString = replace(s_InputString,"\xD2","N")
+	s_InputString = replace(s_InputString,"\xF3","o")
+	s_InputString = replace(s_InputString,"\xD3","O")
+	s_InputString = replace(s_InputString,"\xF8","r")
+	s_InputString = replace(s_InputString,"\xD8","R")
+	s_InputString = replace(s_InputString,"\x9A","s")
+	s_InputString = replace(s_InputString,"\x8A","S")
+	s_InputString = replace(s_InputString,"\x9D","t")
+	s_InputString = replace(s_InputString,"\x8D","T")
+	s_InputString = replace(s_InputString,"\xFA","u")
+	s_InputString = replace(s_InputString,"\xDA","U")
+	s_InputString = replace(s_InputString,"\xF9","u")
+	s_InputString = replace(s_InputString,"\xD9","U")
+	s_InputString = replace(s_InputString,"\xFD","y")
+	s_InputString = replace(s_InputString,"\xDD","Y")
+	s_InputString = replace(s_InputString,"\x9E","z")
+	s_InputString = replace(s_InputString,"\x8E","Z")
+endp
+
+@usr_ErrorMessage(integer i_ErrorID, string s_msg1, string s_msg2, string s_msg3, logical l_abort)
+	local string  sL_ErrorList<<15>> sL_ErrorMessage sL_LineToPrint
+	local integer iL_ErrorMessageLength iL_EndCharIndex
+		
+	if i_ErrorID gt 15 or i_ErrorID lt 1
+		print "!!! Procedure @usr_ErrorMessage: Wrong 'Error ID' input parameter!!!"
+		abort
+	endif
+	
+	;Error list 
+	sL_ErrorList<<1>> = "Error: Operation '" + s_msg1 + "' is not supported. Contact your technical support."
+	; (Add custom errors)
+	;--------------------------------------------------------------------
+		
+	sL_ErrorMessage = sL_ErrorList<<i_ErrorID>>
+		
+	;Splits error message by "\x0D" (new line character)
+	iL_ErrorMessageLength = strlen(sL_ErrorMessage)
+	while iL_ErrorMessageLength gt 0
+		iL_EndCharIndex = instr(sL_ErrorMessage, "\x0D")
+		
+		if iL_EndCharIndex eq 0
+			sL_LineToPrint = sL_ErrorMessage
+			iL_ErrorMessageLength = 0
+		else
+			sL_LineToPrint = left(sL_ErrorMessage, (iL_EndCharIndex - 1))
+			sL_ErrorMessage = substr(sL_ErrorMessage,(iL_EndCharIndex + 2), iL_ErrorMessageLength)
+			iL_ErrorMessageLength = strlen(sL_ErrorMessage)
+		endif
+		
+		print sL_LineToPrint
+		{nb, ";" sL_LineToPrint }
+	endw
+	
+	if l_abort eq true
+		{nb, "M30"}
+		abort
+	endif
+endp
+
