@@ -1,4 +1,6 @@
 ;#region Internal
+;version 1.0
+
 
 @init_post
 	global logical l_FirstJob l_FirstSpin l_FirstMove l_ChangeTool
